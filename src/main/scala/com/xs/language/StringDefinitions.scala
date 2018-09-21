@@ -1,39 +1,41 @@
 package com.xs.language
 
-import scala.util.{Success, Try}
+import com.xs.language.Definitions.{ParsingException, PartialParse}
+
+import scala.util.{Failure, Success, Try}
 
 object StringDefinitions {
 
-  case class StringToken(value: String) extends Definitions.Token {
-    override def toString: String =
-      "\"" + value.replace("\\", "\\\\") + "\""
-  }
+  trait StringDefinition extends Definitions.Definition[String, String]
 
-  trait StringDefinition extends Definitions.Definition[String]
-
-  abstract class RegexDefinition(stringRegex: String)
+  class RegexDefinition(stringRegex: String)
     extends StringDefinition {
 
-    private val compiledRegex = ("""^(""" + stringRegex + """)([\s\S]*)$""").r
+    private val compiledRegex = stringRegex.r
 
-    def specializeString: PartialFunction[StringToken, Definitions.Token] = {
-      case token => token
-    }
-
-    override def tryRawPartialParse(input: String): Try[Definitions.PartialParse[String]] =
-      compiledRegex.findFirstMatchIn(input)
+    override def apply(input: String): Try[PartialParse[String, String]] =
+      compiledRegex.findPrefixMatchOf(input)
         .map { matched =>
-          val parsed = matched.group(1)
-          val remainingInput = matched.group(matched.groupCount)
-          Success(Definitions.PartialParse(StringToken(parsed), remainingInput))
+          val parsed = matched.group(0)
+          val remainingInput = input.drop(matched.end)
+          Success(Definitions.PartialParse(parsed, remainingInput))
         }.getOrElse(parsingFailure(input))
 
-    override def specialize: PartialFunction[Definitions.Token, Definitions.Token] = {
-      case stringToken@StringToken(_) => specializeString(stringToken)
-    }
-
     override def toString: String =
-      "{\"regex\": \"" + stringRegex + "\"}"
+      s"""{"regex": "$stringRegex"}"""
   }
 
+  class LiteralDefinition(stringValue: String)
+    extends StringDefinition {
+
+    override def apply(input: String): Try[PartialParse[String, String]] =
+      if (input.startsWith(stringValue)) {
+        Success(PartialParse(stringValue, input.drop(stringValue.length)))
+      } else {
+        Failure(ParsingException(s"Could not parse $input using $toString"))
+      }
+
+    override def toString: String =
+      "\"" + stringValue + "\""
+  }
 }

@@ -2,7 +2,7 @@ package com.xs.language
 
 object XSTokens {
 
-  trait XSToken extends Definitions.Token
+  sealed trait XSToken
 
   trait ExpressionToken
     extends XSToken
