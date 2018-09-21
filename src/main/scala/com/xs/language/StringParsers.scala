@@ -1,15 +1,15 @@
 package com.xs.language
 
-import com.xs.language.Definitions.{ParsingException, PartialParse}
+import com.xs.language.Parsers.{ProgramParsingException, PartialParse}
 
 import scala.util.{Failure, Success, Try}
 
-object StringDefinitions {
+object StringParsers {
 
-  trait StringDefinition extends Definitions.Definition[String, String]
+  trait StringParser extends Parsers.Parser[String, String]
 
-  class RegexDefinition(stringRegex: String)
-    extends StringDefinition {
+  class RegexParser(stringRegex: String)
+    extends StringParser {
 
     private val compiledRegex = stringRegex.r
 
@@ -18,21 +18,21 @@ object StringDefinitions {
         .map { matched =>
           val parsed = matched.group(0)
           val remainingInput = input.drop(matched.end)
-          Success(Definitions.PartialParse(parsed, remainingInput))
+          Success(Parsers.PartialParse(parsed, remainingInput))
         }.getOrElse(parsingFailure(input))
 
     override def toString: String =
       s"""{"regex": "$stringRegex"}"""
   }
 
-  class LiteralDefinition(stringValue: String)
-    extends StringDefinition {
+  class LiteralParser(stringValue: String)
+    extends StringParser {
 
     override def apply(input: String): Try[PartialParse[String, String]] =
       if (input.startsWith(stringValue)) {
         Success(PartialParse(stringValue, input.drop(stringValue.length)))
       } else {
-        Failure(ParsingException(s"Could not parse $input using $toString"))
+        Failure(ProgramParsingException(s"Could not parse $input using $toString"))
       }
 
     override def toString: String =

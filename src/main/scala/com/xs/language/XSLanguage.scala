@@ -2,7 +2,7 @@ package com.xs.language
 
 import scala.io.Source
 import scala.util.{Failure, Success}
-import XSLexer.programDefinition
+import XSLexer.programParser
 
 object XSLanguage {
   private def using[A <: {def close() : Unit}, B](resource: A)(action: A => B) =
@@ -19,16 +19,16 @@ object XSLanguage {
       print(programContent)
       print("EOF\n\n")
 
-      println(programDefinition.toString.replace("\\", "\\\\"))
+      println(programParser.toString)
 
-      programDefinition.parseAll(programContent) match {
+      programParser.parseAll(programContent) match {
         case Success(token) =>
           println("Success")
           println(token.toString)
-        case Failure(exception@Definitions.ParsingException(_, _)) =>
+        case Failure(exception@Parsers.ProgramParsingException(_, _)) =>
           println("Parsing Failure:")
           println(exception.getCauseMessages)
-        case Failure(exception@Definitions.DefinitionException(_, _)) =>
+        case Failure(exception@Parsers.ParsingDefinitionException(_, _)) =>
           println("Definition Failure:")
           println(exception.getCauseMessages)
         case Failure(exception) =>
