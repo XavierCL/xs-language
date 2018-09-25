@@ -1,25 +1,34 @@
 package com.xs.language
 
+import scala.collection.mutable
 import scala.util.{Failure, Success, Try}
 
 object Parsers {
 
-  abstract class ParsingException(message: String,
-                                  cause: ParsingException = None.orNull)
+  abstract class CausedException(message: String,
+                                 cause: Throwable = None.orNull)
     extends Exception(message, cause) {
     def getCauseMessages: String =
-      message + Option(cause)
-        .map(cause => s" caused by:\n${cause.getCauseMessages}")
-        .getOrElse("")
+      message + (Option(cause) match {
+        case Some(caused: CausedException) => s" caused by:\n${caused.getCauseMessages}"
+        case Some(other) => s" caused by:\n${other.getMessage}"
+        case None => ""
+      })
   }
 
-  case class ProgramParsingException(private val message: String,
-                                     private val cause: ParsingException = None.orNull
-                             ) extends ParsingException(message, cause)
+  sealed abstract class ParsingException(message: String,
+                                         cause: Throwable = None.orNull)
+    extends CausedException(message, cause)
 
-  case class ParsingDefinitionException(private val message: String,
-                                        private val cause: ParsingException = None.orNull
-                                ) extends ParsingException(message, cause)
+  case class ProgramParsingException(message: String,
+                                     cause: Throwable = None.orNull
+                                    )
+    extends ParsingException(message, cause)
+
+  case class ParsingDefinitionException(message: String,
+                                        cause: Throwable = None.orNull
+                                       )
+    extends ParsingException(message, cause)
 
   case class PartialParse[InputType, +OutputType](output: OutputType, remainingInput: InputType)
 
@@ -28,13 +37,10 @@ object Parsers {
 
     outer =>
 
-    lazy val toFun: () => Parser[InputType, OutputType] =
-      () => this
-
     def parseAll(input: InputType): Try[OutputType] =
-      this (input).flatMap {
+      outer(input).flatMap {
         case PartialParse(_, remainingInput) if !remainingInput.isEmpty() =>
-          Failure(ProgramParsingException(s"$remainingInput remained when parsing $input using $toString"))
+          Failure(ProgramParsingException(s"$remainingInput remained when parsing $input using $id"))
         case PartialParse(output, _) => Success(output)
       }
 
@@ -45,9 +51,74 @@ object Parsers {
             PartialParse(action(parse.output), parse.remainingInput)
           )
 
-        override def toString: String =
-          outer.toString
+        override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+          outer.displayIfNotDisplayed(alreadyPrinted)
       }
+
+    def ~[OtherOutputType](_other: =>Parser[InputType, OtherOutputType]): Parser[InputType, (OutputType, OtherOutputType)] = {
+      lazy val other = _other
+      new Parser[InputType, (OutputType, OtherOutputType)] {
+        override def apply(input: InputType): Try[PartialParse[InputType, (OutputType, OtherOutputType)]] =
+          outer(input)
+            .flatMap(parsed => other(parsed.remainingInput)
+              .map(otherParsed =>
+                PartialParse((parsed.output, otherParsed.output), otherParsed.remainingInput)
+              )
+            )
+
+        override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+          s"""{"and": [${outer.displayIfNotDisplayed(alreadyPrinted)}, ${other.displayIfNotDisplayed(alreadyPrinted)}]}"""
+      }
+    }
+
+    def <~[OtherOutputType](_other: =>Parser[InputType, OtherOutputType]): Parser[InputType, OutputType] = {
+      lazy val other = _other
+      new Parser[InputType, OutputType] {
+        override def apply(input: InputType): Try[PartialParse[InputType, OutputType]] =
+          outer(input)
+            .flatMap(parsed => other(parsed.remainingInput)
+              .map(otherParsed =>
+                PartialParse(parsed.output, otherParsed.remainingInput)
+              )
+            )
+
+        override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+          s"""{"andLeft": [${outer.displayIfNotDisplayed(alreadyPrinted)}, ${other.displayIfNotDisplayed(alreadyPrinted)}]}"""
+      }
+    }
+
+    def ~>[OtherOutputType](_other: =>Parser[InputType, OtherOutputType]): Parser[InputType, OtherOutputType] = {
+      lazy val other = _other
+      new Parser[InputType, OtherOutputType] {
+        override def apply(input: InputType): Try[PartialParse[InputType, OtherOutputType]] =
+          outer(input)
+            .flatMap(parsed => other(parsed.remainingInput)
+              .map(otherParsed =>
+                PartialParse(otherParsed.output, otherParsed.remainingInput)
+              )
+            )
+
+        override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+          s"""{"andRight": [${outer.displayIfNotDisplayed(alreadyPrinted)}, ${other.displayIfNotDisplayed(alreadyPrinted)}]}"""
+      }
+    }
+
+    def |[OtherOutputType >: OutputType](_other: =>Parser[InputType, OtherOutputType]): Parser[InputType, OtherOutputType] = {
+      lazy val other = _other
+      new Parser[InputType, OtherOutputType] {
+        override def apply(input: InputType): Try[PartialParse[InputType, OtherOutputType]] =
+          outer(input) match {
+            case success@Success(_) => success
+            case Failure(_) => other(input) match {
+              case success@Success(_) => success
+              case Failure(_) => Failure(ProgramParsingException(s"Could not parse $input using $display"))
+            }
+          }
+
+        override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+          s"""{"or": [${outer.displayIfNotDisplayed(alreadyPrinted)}, ${other.displayIfNotDisplayed(alreadyPrinted)}]}"""
+      }
+    }
 
     def opt: Parser[InputType, Option[OutputType]] =
       new Parser[InputType, Option[OutputType]] {
@@ -58,8 +129,8 @@ object Parsers {
             ).getOrElse(PartialParse(None, input))
           )
 
-        override def toString: String =
-          s"""{"opt": ${outer.toString}}"""
+        override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+          s"""{"opt": ${outer.displayIfNotDisplayed(alreadyPrinted)}}"""
       }
 
     def star: Parser[InputType, Seq[OutputType]] =
@@ -69,7 +140,7 @@ object Parsers {
             case Failure(exception: ParsingException) =>
               Success((PartialParse(outputs, executingInput), exception))
             case Success(PartialParse(_, remainingInput)) if remainingInput == executingInput =>
-              Failure(ParsingDefinitionException(s"Infinite match when parsing $executingInput using $toString"))
+              Failure(ParsingDefinitionException(s"Infinite match when parsing $executingInput using $id"))
             case Success(PartialParse(output, remainingInput)) =>
               tryPartialParseStarParser(outputs :+ output, remainingInput)
           }
@@ -80,67 +151,65 @@ object Parsers {
         override def parseAll(input: InputType): Try[Seq[OutputType]] =
           tryPartialParseStarParser(Seq(), input).flatMap {
             case (PartialParse(_, remainingInput), exception) if !remainingInput.isEmpty() =>
-              Failure(ProgramParsingException(s"Could not fully parse $remainingInput using $toString", exception))
+              Failure(ProgramParsingException(s"Could not fully parse $remainingInput using $id", exception))
             case (PartialParse(output, _), _) =>
               Success(output)
           }
 
-        override def toString: String =
-          s"""{"star": ${outer.toString}}"""
+        override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+          s"""{"star": ${outer.displayIfNotDisplayed(alreadyPrinted)}}"""
       }
 
-    def toString: String
-
-    protected def parsingFailure(input: InputType, cause: ParsingException = None.orNull): Failure[PartialParse[InputType, OutputType]] =
-      Failure(ProgramParsingException(toString + " could not parse " + input, cause))
-  }
-
-  class ConcatParser[InputType <: {def isEmpty() : Boolean}, +OutputType](_parsers: (() => Parser[InputType, OutputType])*)
-    extends Parser[InputType, Seq[OutputType]] {
-
-    lazy val parsers: Seq[Parser[InputType, OutputType]] = _parsers.map(_())
-
-    override def apply(input: InputType): Try[PartialParse[InputType, Seq[OutputType]]] = {
-      def tryPartialParseConcatParser(executingParsers: Seq[Parser[InputType, OutputType]], parsed: Seq[OutputType], executingInput: InputType): Try[PartialParse[InputType, Seq[OutputType]]] =
-        executingParsers match {
-          case headParser +: tailParsers =>
-            headParser(executingInput) match {
-              case Success(PartialParse(output, remainingInput)) =>
-                tryPartialParseConcatParser(tailParsers, parsed :+ output, remainingInput)
-              case Failure(causeException: ParsingException) => parsingFailure(input, causeException)
-              case Failure(otherException) => Failure(new Exception("Unknown exception", otherException))
+    def rep(count: Int): Parser[InputType, Seq[OutputType]] =
+      new Parser[InputType, Seq[OutputType]] {
+        override def apply(input: InputType): Try[PartialParse[InputType, Seq[OutputType]]] = {
+          def applyRepParser(executingCount: Int, executingInput: InputType, outputs: Seq[OutputType]): Try[PartialParse[InputType, Seq[OutputType]]] =
+            executingCount match {
+              case zeroOrLower if zeroOrLower <= 0 => Success(PartialParse(outputs, executingInput))
+              case nonZeroCount => outer(executingInput) match {
+                case Failure(error) => Failure(ProgramParsingException(s"Could not parse $input $count times using ${outer.id}. Failed at the $executingCount time.", error))
+                case Success(PartialParse(output, remainingInput)) => applyRepParser(nonZeroCount - 1, remainingInput, outputs :+ output)
+              }
             }
-          case _ => Success(PartialParse(parsed, executingInput))
+          applyRepParser(count, input, Seq.empty[OutputType])
         }
 
-      tryPartialParseConcatParser(parsers, Seq(), input)
-    }
+        override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+          s"""{"rep": {"count": $count, "inner": ${outer.displayIfNotDisplayed(alreadyPrinted)}}}"""
+      }
 
-    override def toString: String =
-      """{"concat": [""" + parsers.map(_.toString).mkString(",") + """]}"""
-  }
+    def named(name: String): Parser[InputType, OutputType] =
+      new Parser[InputType, OutputType] {
+        override def apply(input: InputType): Try[PartialParse[InputType, OutputType]] =
+          outer(input)
 
-  class OrParser[InputType <: {def isEmpty() : Boolean}, +OutputType](_parsers: (() => Parser[InputType, OutputType])*)
-    extends Parser[InputType, OutputType] {
+        override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+          outer.getRepresentation(alreadyPrinted)
 
-    lazy val parsers: Seq[Parser[InputType, OutputType]] = _parsers.map(_())
+        override def displayIfNotDisplayed(alreadyPrinted: mutable.Set[String]): String =
+          if(alreadyPrinted.contains(id)) {
+            s"""{"oldRef": $id}"""
+          } else {
+            s"""{"newRef": $id, "value": ${getRepresentation(alreadyPrinted += id)}}"""
+          }
 
-    override def apply(input: InputType): Try[PartialParse[InputType, OutputType]] = {
-      def tryPartialParseOrParser(executingParsers: Seq[Parser[InputType, OutputType]]): Try[PartialParse[InputType, OutputType]] =
-        executingParsers match {
-          case headParser +: tailParsers =>
-            headParser(input) match {
-              case success@Success(_) => success
-              case _ => tryPartialParseOrParser(tailParsers)
-            }
-          case _ => parsingFailure(input)
-        }
+        override val id: String =
+          "\"" + name + "\""
+      }
 
-      tryPartialParseOrParser(parsers)
-    }
+    def getRepresentation(alreadyPrinted: mutable.Set[String]): String
 
-    override def toString: String =
-      """{"or": [""" + parsers.map(_.toString()).mkString(",") + """]}"""
+    def displayIfNotDisplayed(alreadyPrinted: mutable.Set[String]): String =
+      getRepresentation(alreadyPrinted += outer.id)
+
+    def display: String =
+      displayIfNotDisplayed(mutable.Set.empty[String])
+
+    def id: String =
+      s"${outer.hashCode()}"
+
+    protected def parsingFailure(input: InputType, cause: Throwable = None.orNull): Failure[PartialParse[InputType, OutputType]] =
+      Failure(ProgramParsingException(s"""${outer.id} could not parse "$input" as $display""", cause))
   }
 
 }

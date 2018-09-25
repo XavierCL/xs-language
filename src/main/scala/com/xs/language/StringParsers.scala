@@ -1,7 +1,8 @@
 package com.xs.language
 
-import com.xs.language.Parsers.{ProgramParsingException, PartialParse}
+import com.xs.language.Parsers.{PartialParse, ProgramParsingException}
 
+import scala.collection.mutable
 import scala.util.{Failure, Success, Try}
 
 object StringParsers {
@@ -21,8 +22,8 @@ object StringParsers {
           Success(Parsers.PartialParse(parsed, remainingInput))
         }.getOrElse(parsingFailure(input))
 
-    override def toString: String =
-      s"""{"regex": "$stringRegex"}"""
+    override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+      s"""{"regex": "${stringRegex.replace("\\", "\\\\").replace("\"", "\\\"")}"}"""
   }
 
   class LiteralParser(stringValue: String)
@@ -32,10 +33,10 @@ object StringParsers {
       if (input.startsWith(stringValue)) {
         Success(PartialParse(stringValue, input.drop(stringValue.length)))
       } else {
-        Failure(ProgramParsingException(s"Could not parse $input using $toString"))
+        parsingFailure(input)
       }
 
-    override def toString: String =
-      "\"" + stringValue + "\""
+    override def getRepresentation(alreadyPrinted: mutable.Set[String]): String =
+      "\"" + stringValue.replace("\n", "\\n").replace("\\", "\\\\").replace("\"", "\\\"") + "\""
   }
 }
